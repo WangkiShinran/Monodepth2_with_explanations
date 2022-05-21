@@ -42,7 +42,7 @@ class Trainer:
 
         self.num_scales = len(self.opt.scales)
         self.num_input_frames = len(self.opt.frame_ids)  # default=[0, -1, 1]
-        self.num_pose_frames = 2 if self.opt.pose_model_input == "pairs" else self.num_input_frames
+        self.num_pose_frames = 2 if self.opt.pose_model_input == "pairs" else self.num_input_frames  # pose encoder输入图片数
 
         assert self.opt.frame_ids[0] == 0, "frame_ids must start with 0"
 
@@ -99,7 +99,7 @@ class Trainer:
             self.models["predictive_mask"].to(self.device)
             self.parameters_to_train += list(self.models["predictive_mask"].parameters())
 
-        self.model_optimizer = optim.Adam(self.parameters_to_train, self.opt.learning_rate)
+        self.log = optim.Adam(self.parameters_to_train, self.opt.learning_rate)
         self.model_lr_scheduler = optim.lr_scheduler.StepLR(
             self.model_optimizer, self.opt.scheduler_step_size, 0.1)
 
@@ -118,16 +118,18 @@ class Trainer:
 
         fpath = os.path.join(os.path.dirname(__file__), "splits", self.opt.split, "{}_files.txt")
 
-        train_filenames = readlines(fpath.format("train"))
+        train_filenames = readlines(fpath.format("train"))  # 从train_files.txt里逐行读取
         val_filenames = readlines(fpath.format("val"))
         img_ext = '.png' if self.opt.png else '.jpg'
 
         num_train_samples = len(train_filenames)
         self.num_total_steps = num_train_samples // self.opt.batch_size * self.opt.num_epochs
 
+        # 此处调用数据集的构造函数
         train_dataset = self.dataset(
             self.opt.data_path, train_filenames, self.opt.height, self.opt.width,
             self.opt.frame_ids, 4, is_train=True, img_ext=img_ext)
+        # DataLoader从数据库中每次抽出batch size个样本
         self.train_loader = DataLoader(
             train_dataset, self.opt.batch_size, True,
             num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
@@ -139,7 +141,7 @@ class Trainer:
             num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
         self.val_iter = iter(self.val_loader)
 
-        self.writers = {}
+        self.writers = {}  # tensorboard记录信息，生成train和val文件夹下的两个event文件，和模型保存在同一个文件夹下
         for mode in ["train", "val"]:
             self.writers[mode] = SummaryWriter(os.path.join(self.log_path, mode))
 
@@ -149,7 +151,7 @@ class Trainer:
 
         self.backproject_depth = {}
         self.project_3d = {}
-        for scale in self.opt.scales:
+        for scale in self.opt.scales:  # [0, 1, 2, 3]
             h = self.opt.height // (2 ** scale)
             w = self.opt.width // (2 ** scale)
 
@@ -166,7 +168,7 @@ class Trainer:
         print("There are {:d} training items and {:d} validation items\n".format(
             len(train_dataset), len(val_dataset)))
 
-        self.save_opts()
+        self.save_opts()  # 在同一个log路径下保存设置信息opt.json
 
     def set_train(self):
         """Convert all models to training mode
@@ -185,7 +187,7 @@ class Trainer:
         """
         self.epoch = 0
         self.step = 0
-        self.start_time = time.time()
+        self.start_time = time.time()  # 记录模型训练总剩余时间
         for self.epoch in range(self.opt.num_epochs):
             self.run_epoch()
             if (self.epoch + 1) % self.opt.save_frequency == 0:
@@ -197,8 +199,10 @@ class Trainer:
         self.model_lr_scheduler.step()
 
         print("Training")
-        self.set_train()
+        self.set_train()  # 通过set_train()来将resnet encoder和depth decoder模型设置成训练状态
 
+        total_loss = 0  # 记录每个epoch的平均损失
+        # 遍历self.train_loader,返回一个batch大小的inputs数据,会调用mono_dataset.py中的__getitem__()
         for batch_idx, inputs in enumerate(self.train_loader):
 
             before_op_time = time.time()
@@ -224,7 +228,10 @@ class Trainer:
                 self.log("train", inputs, outputs, losses)
                 self.val()
 
+            total_loss += losses["loss"].cpu().data
             self.step += 1
+        total_loss /= self.opt.batch_size
+        self.log_epoch("train",total_loss)
 
     def process_batch(self, inputs):
         """Pass a minibatch through the network and generate images and losses
@@ -235,7 +242,7 @@ class Trainer:
         if self.opt.pose_model_type == "shared":
             # If we are using a shared encoder for both depth and pose (as advocated
             # in monodepthv1), then all images are fed separately through the depth encoder.
-            all_color_aug = torch.cat([inputs[("color_aug", i, 0)] for i in self.opt.frame_ids])
+            all_color_aug = torch.cat([inputs[("color_aug", i, 0)] for i in self.opt.frame_ids])  # 指定维度上张量拼接
             all_features = self.models["encoder"](all_color_aug)
             all_features = [torch.split(f, self.opt.batch_size) for f in all_features]
 
@@ -243,11 +250,11 @@ class Trainer:
             for i, k in enumerate(self.opt.frame_ids):
                 features[k] = [f[i] for f in all_features]
 
-            outputs = self.models["depth"](features[0])
+            outputs = self.models["depth"](features[0])  # 把encoder提取特征送入depth decoder估计出深度
         else:
             # Otherwise, we only feed the image with frame_id 0 through the depth encoder
             features = self.models["encoder"](inputs["color_aug", 0, 0])
-            outputs = self.models["depth"](features)
+            outputs = self.models["depth"](features)  # outputs是depth decoder求出来的
 
         if self.opt.predictive_mask:
             outputs["predictive_mask"] = self.models["predictive_mask"](features)
@@ -270,17 +277,17 @@ class Trainer:
 
             # select what features the pose network takes as input
             if self.opt.pose_model_type == "shared":
-                pose_feats = {f_i: features[f_i] for f_i in self.opt.frame_ids}
+                pose_feats = {f_i: features[f_i] for f_i in self.opt.frame_ids}  # 字典
             else:
                 pose_feats = {f_i: inputs["color_aug", f_i, 0] for f_i in self.opt.frame_ids}
 
-            for f_i in self.opt.frame_ids[1:]:
+            for f_i in self.opt.frame_ids[1:]:  # frame_ids默认为[0, -1, 1]
                 if f_i != "s":
                     # To maintain ordering we always pass frames in temporal order
                     if f_i < 0:
-                        pose_inputs = [pose_feats[f_i], pose_feats[0]]
+                        pose_inputs = [pose_feats[f_i], pose_feats[0]]  # -1和0输入
                     else:
-                        pose_inputs = [pose_feats[0], pose_feats[f_i]]
+                        pose_inputs = [pose_feats[0], pose_feats[f_i]]  # 0和+1输入
 
                     if self.opt.pose_model_type == "separate_resnet":
                         pose_inputs = [self.models["pose_encoder"](torch.cat(pose_inputs, 1))]
@@ -343,28 +350,30 @@ class Trainer:
         """Generate the warped (reprojected) color images for a minibatch.
         Generated images are saved into the `outputs` dictionary.
         """
+        # outputs["disp"]，在depth_decoder.py第63行生成，直接输出的就是视差图，并且仍然多尺度[0,1,2,3]分布。
         for scale in self.opt.scales:
             disp = outputs[("disp", scale)]
-            if self.opt.v1_multiscale:
+            if self.opt.v1_multiscale:  # 不使用
                 source_scale = scale
             else:
+                # 双线性插值
                 disp = F.interpolate(
                     disp, [self.opt.height, self.opt.width], mode="bilinear", align_corners=False)
                 source_scale = 0
-
+            # 将disp值映射到[0.01,10]，并求倒数就能得到深度值
             _, depth = disp_to_depth(disp, self.opt.min_depth, self.opt.max_depth)
-
+            # 将深度值存放到outputs["depth"...]中
             outputs[("depth", 0, scale)] = depth
 
             for i, frame_id in enumerate(self.opt.frame_ids[1:]):
-
+                # 在stereo traning时， frame_id恒为"s"
                 if frame_id == "s":
-                    T = inputs["stereo_T"]
+                    T = inputs["stereo_T"]  # 使用双目中的另一目作为参考帧，使用已知的参数
                 else:
-                    T = outputs[("cam_T_cam", 0, frame_id)]
+                    T = outputs[("cam_T_cam", 0, frame_id)]  # 使用单目视频中前后帧作为参考，使用PoseNet输出结果
 
                 # from the authors of https://arxiv.org/abs/1712.00175
-                if self.opt.pose_model_type == "posecnn":
+                if self.opt.pose_model_type == "posecnn":  # 默认不使用，而用separate_resnet
 
                     axisangle = outputs[("axisangle", 0, frame_id)]
                     translation = outputs[("translation", 0, frame_id)]
@@ -374,14 +383,17 @@ class Trainer:
 
                     T = transformation_from_parameters(
                         axisangle[:, 0], translation[:, 0] * mean_inv_depth[:, 0], frame_id < 0)
-
+                # 将深度图投影成3维点云
                 cam_points = self.backproject_depth[source_scale](
                     depth, inputs[("inv_K", source_scale)])
+                # 将3维点云投影成二维图像
                 pix_coords = self.project_3d[source_scale](
                     cam_points, inputs[("K", source_scale)], T)
-
+                # 将二维图像赋值给outputs[("sample"..)]
                 outputs[("sample", frame_id, scale)] = pix_coords
-
+                # grid_sample底层是应用双线性插值，把输入的tensor转换为指定大小
+                # outputs上某点(x,y)的三个通道像素值来自于inputs上的(x',y')
+                # 而x'和y'则来自outputs(x,y)的最低维[0]和[1]
                 outputs[("color", frame_id, scale)] = F.grid_sample(
                     inputs[("color", frame_id, source_scale)],
                     outputs[("sample", frame_id, scale)],
@@ -409,24 +421,24 @@ class Trainer:
         """Compute the reprojection and smoothness losses for a minibatch
         """
         losses = {}
-        total_loss = 0
-
+        total_loss = 0  # 记录每个batch的loss
+        # 按尺度来计算loss
         for scale in self.opt.scales:
             loss = 0
             reprojection_losses = []
 
-            if self.opt.v1_multiscale:
+            if self.opt.v1_multiscale:  # 论文中的baseline，并没有将深度图缩放回原尺度计算损失
                 source_scale = scale
             else:
                 source_scale = 0
 
-            disp = outputs[("disp", scale)]
-            color = inputs[("color", 0, scale)]
-            target = inputs[("color", 0, source_scale)]
+            disp = outputs[("disp", scale)]  # 按尺度获得视差图
+            color = inputs[("color", 0, scale)]  # 按尺度获得原始输入图
+            target = inputs[("color", 0, source_scale)]  # 0尺度的原始输入图
 
             for frame_id in self.opt.frame_ids[1:]:
-                pred = outputs[("color", frame_id, scale)]
-                reprojection_losses.append(self.compute_reprojection_loss(pred, target))
+                pred = outputs[("color", frame_id, scale)]  # 按尺度获得对应图像的预测图（即深度图转换到点云再转到二维图像最后采样得到的彩图）
+                reprojection_losses.append(self.compute_reprojection_loss(pred, target))  # 根据pred多尺度图和0尺度
 
             reprojection_losses = torch.cat(reprojection_losses, 1)
 
@@ -463,40 +475,41 @@ class Trainer:
                 reprojection_loss = reprojection_losses.mean(1, keepdim=True)
             else:
                 reprojection_loss = reprojection_losses
+            # reprojection_loss: torch.Size([12, 2, 192, 640])
 
             if not self.opt.disable_automasking:
                 # add random numbers to break ties
                 identity_reprojection_loss += torch.randn(
                     identity_reprojection_loss.shape, device=self.device) * 0.00001
 
-                combined = torch.cat((identity_reprojection_loss, reprojection_loss), dim=1)
+                combined = torch.cat((identity_reprojection_loss, reprojection_loss), dim=1)  # 在第1个维度上拼接
             else:
                 combined = reprojection_loss
-
+            # combined:torch.Size([12, 4, 192, 640])，identity_reprojection_loss:torch.Size([12, 2, 192, 640])
             if combined.shape[1] == 1:
                 to_optimise = combined
             else:
                 to_optimise, idxs = torch.min(combined, dim=1)
-
+            # to_optimise: torch.Size([12, 192, 640])
             if not self.opt.disable_automasking:
                 outputs["identity_selection/{}".format(scale)] = (
-                    idxs > identity_reprojection_loss.shape[1] - 1).float()
+                    idxs > identity_reprojection_loss.shape[1] - 1).float()  # 很巧妙地应用了auto-masking根据482行取得的最小值过滤
 
-            loss += to_optimise.mean()
+            loss += to_optimise.mean()  # 把重投影误差加到总误差上
 
             mean_disp = disp.mean(2, True).mean(3, True)
             norm_disp = disp / (mean_disp + 1e-7)
             smooth_loss = get_smooth_loss(norm_disp, color)
 
-            loss += self.opt.disparity_smoothness * smooth_loss / (2 ** scale)
-            total_loss += loss
+            loss += self.opt.disparity_smoothness * smooth_loss / (2 ** scale)  # disparity_smoothness为平滑误差权重1e-3
+            total_loss += loss  # 把平滑误差加到总误差上
             losses["loss/{}".format(scale)] = loss
 
-        total_loss /= self.num_scales
+        total_loss /= self.num_scales  # 各尺度loss取平均值
         losses["loss"] = total_loss
         return losses
 
-    def compute_depth_losses(self, inputs, outputs, losses):
+    def compute_depth_losses(self, inputs, outputs, losses):  # 仅根据Kitty撰写，因此无参考意义
         """Compute depth metrics, to allow monitoring during training
 
         This isn't particularly accurate as it averages over the entire batch,
@@ -537,6 +550,12 @@ class Trainer:
             " | loss: {:.5f} | time elapsed: {} | time left: {}"
         print(print_string.format(self.epoch, batch_idx, samples_per_sec, loss,
                                   sec_to_hm_str(time_sofar), sec_to_hm_str(training_time_left)))
+
+    def log_epoch(self, mode, losses):
+        """Write an event to the tensorboard events file
+        """
+        writer = self.writers[mode]
+        writer.add_scalar("epoch_loss", losses, self.epoch)
 
     def log(self, mode, inputs, outputs, losses):
         """Write an event to the tensorboard events file

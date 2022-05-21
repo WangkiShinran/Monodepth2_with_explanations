@@ -59,7 +59,7 @@ def parse_args():
 
 
 def test_simple(args):
-    """Function to predict for a single image or folder of images
+    """Function to predict for a series of images or folder of images
     """
     if torch.cuda.is_available() and not args.no_cuda:
         device = torch.device("cuda")
@@ -123,7 +123,7 @@ def test_simple(args):
             # Load image and preprocess
             input_image = pil.open(image_path).convert('RGB')
             original_width, original_height = input_image.size
-            input_image = input_image.resize((feed_width, feed_height), pil.LANCZOS)
+            input_image = input_image.resize((feed_width, feed_height), pil.LANCZOS)  # pil.LANCZOS为采样方法，实现缩放
             input_image = transforms.ToTensor()(input_image).unsqueeze(0)
 
             # PREDICTION
@@ -133,7 +133,7 @@ def test_simple(args):
 
             disp = outputs[("disp", 0)]
             disp_resized = torch.nn.functional.interpolate(
-                disp, (original_height, original_width), mode="bilinear", align_corners=False)
+                disp, (original_height, original_width), mode="bilinear", align_corners=False)  # 实现插值和上采样
 
             output_name = os.path.splitext(os.path.basename(image_path))[0]
             '''
@@ -150,12 +150,20 @@ def test_simple(args):
             '''
 
             # Saving colormapped depth image
+            # .numpy()将Tensor变量转换为ndarray变量
+            # .cpu()将数据的处理设备从其他设备,如.cuda()拿到cpu上，不会改变变量类型，转换后仍然是Tensor变量。
             disp_resized_np = disp_resized.squeeze().cpu().numpy()
-            vmax = np.percentile(disp_resized_np, 95)
+            vmax = np.percentile(disp_resized_np, 95)  # 求取disp_resized_np(array)(从小到大排列)第95%分位的数值
             normalizer = mpl.colors.Normalize(vmin=disp_resized_np.min(), vmax=vmax)
-            mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
+            mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')  # 把深度值归一化到vmin和vmax之间之后使用'magma'色带渲染
+            '''将色带上的颜色应用在规范化后的数据上
+            利用matplotlib中的cm模块中的cm.ScalarMappable(norm=None, cmap=None)
+            利用norm来规范化数据cmap为数据找到对应的颜色，得到可映射标量ScalarMappable对象，记为sm，
+            做图的时候添加参数c = sm.to_rgba(x)(其中rgba中的rgb是指RGB色彩理论，a是指alpha表示颜色的透亮度)即可
+            '''
             colormapped_im = (mapper.to_rgba(disp_resized_np)[:, :, :3] * 255).astype(np.uint8)
             im = pil.fromarray(colormapped_im)
+
 
             name_dest_im = os.path.join(output_directory, "{}.png".format(output_name))
             im.save(name_dest_im)

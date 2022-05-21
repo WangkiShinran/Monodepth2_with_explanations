@@ -1,3 +1,6 @@
+本项目为含有中文注释方便学习的Monodepth2
+有些代码细节并未和服务器同步，因此不能保证直接可以跑
+
 RGB图像命名举例
 img_01972_c0_1290444812906489us.jpg
 1024*768
@@ -32,3 +35,28 @@ c1
 数据集路径
 data_path = os.path.join("data0", "dataset", "SJTU", "SeasonDepth")
 
+测试时只需python test.py即可
+具体修改test.py中：
+35行测试集路径
+72行模型路径
+112行输出路径
+
+训练
+CUDA_VISIBLE_DEVICES=3 python train.py --model_name brand_new_c1
+具体修改options.py中：
+28行模型保存路径
+39行训练集划分
+64行smooth损失权重，默认1e-3
+95行学习率，默认1e-4
+99行epoch数，默认20
+trainer.py中103行定义scheduler类型
+207行用于迁移学习的学习率设置
+CUDA_VISIBLE_DEVICES=3 python train.py --model_name c0_20-30 --load_weights_folder ./log/c0_20/brand_new_c0/models/weights_19
+CUDA_VISIBLE_DEVICES=2 python train.py --model_name c1_20-30 --load_weights_folder ./log/c1_20/brand_new_c1/models/weights_19
+继续训练时会加载最开始设置的optimizer，因此需要在trainer.py的207行修改self.model_optimizer.param_groups[0]['lr']=1e-6
+
+tensorboard使用
+下载log文件到本地后，在文件夹中运行
+C:\Users\王琪\AppData\Roaming\Python\Python38\Scripts\tensorboard.exe --logdir ./
+原命令为tensorboard --logdir ./ 即可，但这样找不到tensorboard命令
+接着在浏览器窗口http://localhost:6006/即可查看
